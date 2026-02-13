@@ -29,18 +29,27 @@ cd AI-Interviewer
 
 ### 2. Backend Setup (Spring Boot)
 
-1.  Navigate to the project root directory.
-2.  Open `src/main/resources/application.properties`.
-3.  Replace `YOUR_GEMINI_API_KEY` with your actual Google Gemini API key:
-    ```properties
-    google.gemini.key=YOUR_ACTUAL_API_KEY_HERE
-    google.gemini.model=gemini-flash-latest
-    ```
-4.  Build and run the application:
-    ```bash
-    mvn spring-boot:run
-    ```
-    The backend server will start on `http://localhost:8080`.
+#### **IMPORTANT: Set Environment Variable**
+To keep your API key secure, you must set it as an environment variable. **Do not hardcode it in the `application.properties` file.**
+
+**On Windows (PowerShell):**
+```powershell
+$env:GOOGLE_GEMINI_KEY="YOUR_ACTUAL_API_KEY_HERE"
+```
+
+**On macOS/Linux:**
+```bash
+export GOOGLE_GEMINI_KEY="YOUR_ACTUAL_API_KEY_HERE"
+```
+
+**Note:** This variable is only set for the current terminal session. For a permanent solution, add it to your system's environment variables.
+
+#### **Run the Application**
+Once the environment variable is set, you can run the application:
+```bash
+mvn spring-boot:run
+```
+The backend server will start on `http://localhost:8080`.
 
 ### 3. Frontend Setup (React + Vite)
 
