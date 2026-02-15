@@ -30,8 +30,7 @@ public class QuestionGeneratorService {
 
     private static final String GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/";
     
-    // Increased default delay to 10 seconds to be very safe
-    private static final long DEFAULT_DELAY_MS = 10000; 
+    private static final long DEFAULT_DELAY_MS = 10000;
     
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private final BlockingQueue<RequestTask> queue = new LinkedBlockingQueue<>();
@@ -46,37 +45,71 @@ public class QuestionGeneratorService {
         executorService.shutdownNow();
     }
 
+    private enum TaskType {
+        QUESTION_GENERATION,
+        CODE_ANALYSIS
+    }
+
     private static class RequestTask {
+        TaskType type;
+        // Fields for Question Generation
         String cvText;
         String experienceLevel;
         String questionType;
         List<String> selectedSkills;
+        String jobDescription; // New field for JD
+
+        // Fields for Code Analysis
+        String code;
+
         CompletableFuture<String> future;
 
-        public RequestTask(String cvText, String experienceLevel, String questionType, List<String> selectedSkills, CompletableFuture<String> future) {
+        // Constructor for Question Generation
+        public RequestTask(String cvText, String experienceLevel, String questionType, List<String> selectedSkills, String jobDescription, CompletableFuture<String> future) {
+            this.type = TaskType.QUESTION_GENERATION;
             this.cvText = cvText;
             this.experienceLevel = experienceLevel;
             this.questionType = questionType;
             this.selectedSkills = selectedSkills;
+            this.jobDescription = jobDescription;
+            this.future = future;
+        }
+
+        // Constructor for Code Analysis
+        public RequestTask(String code, CompletableFuture<String> future) {
+            this.type = TaskType.CODE_ANALYSIS;
+            this.code = code;
             this.future = future;
         }
     }
 
-    public Future<String> queueQuestionGeneration(String cvText, String experienceLevel, String questionType, List<String> selectedSkills) {
+    public Future<String> queueQuestionGeneration(String cvText, String experienceLevel, String questionType, List<String> selectedSkills, String jobDescription) {
         CompletableFuture<String> future = new CompletableFuture<>();
-        queue.offer(new RequestTask(cvText, experienceLevel, questionType, selectedSkills, future));
+        queue.offer(new RequestTask(cvText, experienceLevel, questionType, selectedSkills, jobDescription, future));
+        return future;
+    }
+
+    public Future<String> queueCodeAnalysis(String code) {
+        CompletableFuture<String> future = new CompletableFuture<>();
+        queue.offer(new RequestTask(code, future));
         return future;
     }
 
     private void processQueue() {
         while (!Thread.currentThread().isInterrupted()) {
+            RequestTask task = null;
             try {
-                RequestTask task = queue.take();
+                task = queue.take();
                 
-                String result = generateQuestionsWithRetry(task.cvText, task.experienceLevel, task.questionType, task.selectedSkills);
+                String result = "";
+                if (task.type == TaskType.QUESTION_GENERATION) {
+                    result = generateQuestionsWithRetry(task);
+                } else if (task.type == TaskType.CODE_ANALYSIS) {
+                    result = analyzeCodeWithRetry(task);
+                }
+
                 task.future.complete(result);
 
-                // Always wait a bit between successful requests too
                 Thread.sleep(DEFAULT_DELAY_MS);
                 
             } catch (InterruptedException e) {
@@ -84,22 +117,32 @@ public class QuestionGeneratorService {
                 break;
             } catch (Exception e) {
                 e.printStackTrace();
+                if (task != null && task.future != null) {
+                    task.future.completeExceptionally(e);
+                }
             }
         }
     }
 
-    private String generateQuestionsWithRetry(String cvText, String experienceLevel, String questionType, List<String> selectedSkills) {
-        int maxRetries = 5; // Increased retries
+    private String generateQuestionsWithRetry(RequestTask task) {
+        return executeWithRetry(() -> generateQuestionsInternal(task.cvText, task.experienceLevel, task.questionType, task.selectedSkills, task.jobDescription));
+    }
+
+    private String analyzeCodeWithRetry(RequestTask task) {
+        return executeWithRetry(() -> analyzeCodeInternal(task.code));
+    }
+
+    private String executeWithRetry(Callable<String> action) {
+        int maxRetries = 5;
         int attempt = 0;
         
         while (attempt < maxRetries) {
             try {
-                return generateQuestionsInternal(cvText, experienceLevel, questionType, selectedSkills);
+                return action.call();
             } catch (HttpClientErrorException.TooManyRequests e) {
                 attempt++;
                 long waitTime = parseRetryAfter(e.getMessage());
                 System.out.println("Rate limit hit (429). Waiting " + waitTime + "ms before retry " + attempt + "/" + maxRetries);
-                
                 try {
                     Thread.sleep(waitTime);
                 } catch (InterruptedException ie) {
@@ -108,29 +151,42 @@ public class QuestionGeneratorService {
                 }
             } catch (Exception e) {
                 e.printStackTrace();
-                return "Error generating questions: " + e.getMessage();
+                return "Error: " + e.getMessage();
             }
         }
-        return "Error: Failed to generate questions after retries due to rate limits.";
+        return "Error: Failed after retries due to rate limits.";
     }
 
     private long parseRetryAfter(String errorMessage) {
-        // Try to find "Please retry in X s"
         try {
             Pattern pattern = Pattern.compile("retry in ([0-9.]+)s");
             Matcher matcher = pattern.matcher(errorMessage);
             if (matcher.find()) {
                 double seconds = Double.parseDouble(matcher.group(1));
-                return (long) (seconds * 1000) + 1000; // Add 1s buffer
+                return (long) (seconds * 1000) + 1000;
             }
         } catch (Exception e) {
-            // ignore parsing errors
+            // ignore
         }
-        return 30000; // Default to 30s if we can't parse it
+        return 30000;
     }
 
-    private String generateQuestionsInternal(String cvText, String experienceLevel, String questionType, List<String> selectedSkills) {
-        String prompt = createPrompt(cvText, experienceLevel, questionType, selectedSkills);
+    private String generateQuestionsInternal(String cvText, String experienceLevel, String questionType, List<String> selectedSkills, String jobDescription) {
+        String prompt = createPrompt(cvText, experienceLevel, questionType, selectedSkills, jobDescription);
+        return callGeminiApi(prompt);
+    }
+
+    private String analyzeCodeInternal(String code) {
+        String prompt = "Analyze the following code snippet. Provide a structured review covering:\n" +
+                "1. **Correctness**: Does it look logically correct? Identify potential bugs.\n" +
+                "2. **Time & Space Complexity**: Estimate the Big O complexity.\n" +
+                "3. **Best Practices**: Suggest improvements for readability, naming conventions, and clean code.\n" +
+                "4. **Optimized Code**: Provide a refactored/optimized version of the code.\n\n" +
+                "Code:\n" + code;
+        return callGeminiApi(prompt);
+    }
+
+    private String callGeminiApi(String prompt) {
         RestTemplate restTemplate = new RestTemplate();
 
         Map<String, String> part = new HashMap<>();
@@ -156,14 +212,12 @@ public class QuestionGeneratorService {
         ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
         return extractTextFromResponse(response.getBody());
     }
-
-    private String createPrompt(String cvText, String experienceLevel, String questionType, List<String> selectedSkills) {
-        // Aggressively truncate CV text to 4000 chars to stay under token limits
+    private String createPrompt(String cvText, String experienceLevel, String questionType, List<String> selectedSkills, String jobDescription) {
         String truncatedCvText = cvText;
         if (cvText != null && cvText.length() > 4000) {
             truncatedCvText = cvText.substring(0, 4000) + "... [truncated]";
         }
-        
+
         String skillsPrompt = "";
         if (selectedSkills != null && !selectedSkills.isEmpty()) {
             skillsPrompt = "Focus ONLY on the following technical skills: " + String.join(", ", selectedSkills) + ". ";
@@ -179,9 +233,29 @@ public class QuestionGeneratorService {
         } else {
             typePrompt = "Generate a mix of theoretical and practical questions. ";
         }
-        
+
+        String complexityPrompt = "";
+        if (experienceLevel.contains("Fresher")) {
+            complexityPrompt = "The questions should be simple, fundamental, and easy to answer, suitable for a beginner with 0 years of experience. Focus on basic concepts and syntax. ";
+        } else if (experienceLevel.contains("2-5")) {
+            complexityPrompt = "The questions should be of medium complexity, focusing on practical application, problem-solving, and common use cases. ";
+        } else if (experienceLevel.contains("5-8")) {
+            complexityPrompt = "The questions should be complex, focusing on system design, optimization, deep technical understanding, and trade-offs. ";
+        } else if (experienceLevel.contains("8-10") || experienceLevel.contains("10-15") || experienceLevel.contains(">15")) {
+            complexityPrompt = "The questions should be highly advanced, focusing on architecture, scalability, leadership, strategic technical decision making, and complex system design scenarios. ";
+        } else {
+            complexityPrompt = "Tailor the complexity of the questions to match the candidate's experience level. ";
+        }
+
+        String jdPrompt = "";
+        if (jobDescription != null && !jobDescription.trim().isEmpty()) {
+            // Truncate JD to avoid token limits
+            String truncatedJd = jobDescription.length() > 3000 ? jobDescription.substring(0, 3000) + "... [truncated]" : jobDescription;
+            jdPrompt = "IMPORTANT: Tailor the questions specifically to the following Job Description requirements: " + truncatedJd + ". ";
+        }
+
         return "Generate 10 technical interview questions for a " + experienceLevel +
-                " candidate. " + skillsPrompt + typePrompt +
+                " candidate. " + skillsPrompt + typePrompt + complexityPrompt + jdPrompt +
                 "Use the candidate's CV context where relevant: " + truncatedCvText;
     }
 

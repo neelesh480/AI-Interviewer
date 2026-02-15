@@ -57,7 +57,8 @@ public class CvUploadController {
     public ResponseEntity<String> generateQuestions(@RequestParam("file") MultipartFile file,
                                                     @RequestParam("experienceLevel") String experienceLevel,
                                                     @RequestParam(value = "questionType", defaultValue = "Mixed") String questionType,
-                                                    @RequestParam(value = "selectedSkills", required = false) List<String> selectedSkills) {
+                                                    @RequestParam(value = "selectedSkills", required = false) List<String> selectedSkills,
+                                                    @RequestParam(value = "jobDescription", required = false) String jobDescription) {
         // Try to acquire a permit. If full, return 429 immediately.
         if (!semaphore.tryAcquire()) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
@@ -67,7 +68,7 @@ public class CvUploadController {
             String cvText = cvParserService.parseCv(file);
             
             // Submit to queue
-            Future<String> future = questionGeneratorService.queueQuestionGeneration(cvText, experienceLevel, questionType, selectedSkills);
+            Future<String> future = questionGeneratorService.queueQuestionGeneration(cvText, experienceLevel, questionType, selectedSkills, jobDescription);
             
             // Wait for result. 
             String questions = future.get(60, TimeUnit.SECONDS);
@@ -91,6 +92,6 @@ public class CvUploadController {
     @PostMapping("/upload")
     public ResponseEntity<String> uploadCv(@RequestParam("file") MultipartFile file,
                                            @RequestParam("experienceLevel") String experienceLevel) {
-        return generateQuestions(file, experienceLevel, "Mixed", null);
+        return generateQuestions(file, experienceLevel, "Mixed", null, null);
     }
 }
